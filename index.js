@@ -1,12 +1,26 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Environment variable for API token
 const JUDGE_ME_API_TOKEN = process.env.JUDGE_ME_API_TOKEN;
+
+// Allow CORS from specific origin
+const allowedOrigins = ['https://tilemart.com'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (allowedOrigins.includes(origin) || !origin) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+}));
 
 // Proxy route for fetching reviews
 app.get('/fetch', async (req, res) => {
