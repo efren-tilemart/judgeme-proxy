@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3000;
 const JUDGE_ME_API_TOKEN = process.env.JUDGE_ME_API_TOKEN;
 
 // Allow CORS from specific origin
-const allowedOrigins = ['https://tilemart.com'];
+const allowedOrigins = ['https://tilemart.com', 'http://127.0.0.1:9292', 'http://localhost:9292'];
 
 app.use(cors({
   origin: (origin, callback) => {
