@@ -3,11 +3,13 @@
   "version": "1.0.0",
   "description": "Proxy server for Judge.me reviews API",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
   },
   "dependencies": {
+    "@shopify/graphql-client": "^1.2.1",
     "axios": "^1.7.7",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",

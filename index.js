@@ -1,17 +1,30 @@
-require('dotenv').config();
-const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
+import 'dotenv/config';
+import express from 'express';
+import axios from 'axios';
+import { createGraphQLClient } from '@shopify/graphql-client';
+import cors from 'cors';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Environment variable for API token
+// Environment variables
 const JUDGE_ME_API_TOKEN = process.env.JUDGE_ME_API_TOKEN;
+const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
+const SHOP_URL = 'mytilemart.myshopify.com';
+
+// Initialize Shopify GraphQL client
+const client = createGraphQLClient({
+  url: `https://${SHOP_URL}/admin/api/2024-01/graphql.json`,
+  headers: {
+    'Content-Type': 'application/json',
+    'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+  },
+  fetchApi: fetch,
+});
 
 // Allow CORS from specific origin
 const allowedOrigins = [
-  'https://tilemart.com', 
+  'https://tilemart.com',
   'http://127.0.0.1:9292', 
   'http://localhost:9292',
   'https://judgeme-proxy.vercel.app',
@@ -93,6 +106,93 @@ const axiosInstance = axios.create({
     'Connection': 'keep-alive',
     'Cache-Control': 'no-cache',
     'Accept': 'application/json'
+  }
+});
+
+// Middleware
+app.use(express.json());
+app.use(cors());
+
+// Shopify products endpoint
+app.post('/products', async (req, res) => {
+  try {
+    const { handles } = req.body;
+    
+    if (!handles || !Array.isArray(handles)) {
+      return res.status(400).json({
+        error: 'Invalid request. Please provide an array of product handles.'
+      });
+    }
+
+    const query = `
+      query GetProductsByHandle($query: String!) {
+        products(first: 10, query: $query) {
+          nodes {
+            id
+            handle
+            title
+            featuredImage {
+              url
+            }
+            onlineStoreUrl
+            metafields(first: 1, namespace: "custom") {
+              nodes {
+                key
+                value
+                reference {
+                  ... on Product {
+                    title
+                    onlineStoreUrl
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const queryString = handles.map(handle => `handle:'${handle}'`).join(' OR ');
+    console.log('Query String:', queryString);
+
+    const response = await client.request(
+      query,
+      {
+        variables: {
+          query: queryString
+        }
+      }
+    );
+
+    if (!response.data?.products?.nodes) {
+      console.error('Unexpected response structure:', response);
+      return res.status(500).json({
+        error: 'Unexpected response structure from Shopify',
+        details: 'Products data not found in response'
+      });
+    }
+
+    const products = response.data.products.nodes.map(node => {
+      const parentMetafield = node.metafields.nodes.find(m => m.key === 'parent_product');
+      return {
+        handle: node.handle,
+        title: node.title,
+        featuredImage: node.featuredImage?.url || null,
+        url: node.onlineStoreUrl,
+        parentProduct: parentMetafield?.reference ? {
+          title: parentMetafield.reference.title,
+          url: parentMetafield.reference.onlineStoreUrl
+        } : null
+      };
+    });
+
+    res.json({ products });
+  } catch (error) {
+    console.error('Error in products route:', error);
+    res.status(500).json({
+      error: 'An error occurred while fetching products',
+      details: error.message || 'Unknown error'
+    });
   }
 });
 
