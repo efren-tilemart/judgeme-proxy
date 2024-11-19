@@ -14,22 +14,48 @@ const allowedOrigins = [
   'https://tilemart.com', 
   'http://127.0.0.1:9292', 
   'http://localhost:9292',
-  'https://judgeme-proxy.vercel.app'
+  'https://judgeme-proxy.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:3001'
 ];
 
-app.use(cors({
-  origin: (origin, callback) => {
-    if (allowedOrigins.includes(origin) || !origin) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  maxAge: 86400 // 24 hours
-}));
+// CORS middleware
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  
+  // Handle preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
+
+// Add request logging
+app.use((req, res, next) => {
+  console.log('Request Headers:', req.headers);
+  console.log('Request Method:', req.method);
+  console.log('Request URL:', req.url);
+  next();
+});
+
+// Add response logging
+app.use((req, res, next) => {
+  const originalSend = res.send;
+  res.send = function() {
+    console.log('Response Headers:', res.getHeaders());
+    return originalSend.apply(res, arguments);
+  };
+  next();
+});
 
 // Sanitize review data to only include public fields
 const sanitizeReview = (review) => {
