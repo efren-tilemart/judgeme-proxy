@@ -119,9 +119,16 @@ app.post('/products', async (req, res) => {
       });
     }
 
+    // Split handles into chunks of 50 to avoid query complexity limits
+    const chunkSize = 50;
+    const handleChunks = [];
+    for (let i = 0; i < handles.length; i += chunkSize) {
+      handleChunks.push(handles.slice(i, i + chunkSize));
+    }
+
     const query = `
       query GetProductsByHandle($query: String!) {
-        products(first: 10, query: $query) {
+        products(first: 50, query: $query) {  # Increased from 10 to 50
           nodes {
             id
             handle
@@ -147,27 +154,27 @@ app.post('/products', async (req, res) => {
       }
     `;
 
-    const queryString = handles.map(handle => `handle:'${handle}'`).join(' OR ');
-    console.log('Query String:', queryString);
+    // Fetch products in parallel for each chunk
+    const allProducts = [];
+    await Promise.all(
+      handleChunks.map(async (handleChunk) => {
+        const queryString = handleChunk.map(handle => `handle:'${handle}'`).join(' OR ');
+        console.log(`Fetching chunk with ${handleChunk.length} handles...`);
 
-    const response = await client.request(
-      query,
-      {
-        variables: {
-          query: queryString
+        const response = await client.request(query, {
+          variables: {
+            query: queryString
+          }
+        });
+
+        if (response.data?.products?.nodes) {
+          allProducts.push(...response.data.products.nodes);
         }
-      }
+      })
     );
 
-    if (!response.data?.products?.nodes) {
-      console.error('Unexpected response structure:', response);
-      return res.status(500).json({
-        error: 'Unexpected response structure from Shopify',
-        details: 'Products data not found in response'
-      });
-    }
-
-    const products = response.data.products.nodes.map(node => {
+    // Process all products
+    const products = allProducts.map(node => {
       const parentMetafield = node.metafields.nodes.find(m => m.key === 'parent_product');
       return {
         handle: node.handle,
@@ -180,6 +187,8 @@ app.post('/products', async (req, res) => {
         } : null
       };
     });
+
+    console.log(`Requested ${handles.length} products, found ${products.length} products`);
 
     res.json({ products });
   } catch (error) {
