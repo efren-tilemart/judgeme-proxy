@@ -10,7 +10,12 @@ const PORT = process.env.PORT || 3000;
 const JUDGE_ME_API_TOKEN = process.env.JUDGE_ME_API_TOKEN;
 
 // Allow CORS from specific origin
-const allowedOrigins = ['https://tilemart.com', 'http://127.0.0.1:9292', 'http://localhost:9292'];
+const allowedOrigins = [
+  'https://tilemart.com', 
+  'http://127.0.0.1:9292', 
+  'http://localhost:9292',
+  'https://judgeme-proxy.vercel.app'
+];
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -20,6 +25,10 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,
+  maxAge: 86400 // 24 hours
 }));
 
 // Sanitize review data to only include public fields
