@@ -188,8 +188,6 @@ app.post('/products', async (req, res) => {
       };
     });
 
-    console.log(`Requested ${handles.length} products, found ${products.length} products`);
-
     res.json({ products });
   } catch (error) {
     console.error('Error in products route:', error);
@@ -255,6 +253,360 @@ app.get('/fetch', async (req, res) => {
       return res.json(reviewsCache.data);
     }
     res.status(500).json({ error: 'Failed to fetch reviews' });
+  }
+});
+
+// Update the GraphQL query to first find the product by handle
+const PRICE_QUERY = `
+  query GetProductPrice($handle: String!) {
+    products(first: 1, query: $handle) {
+      nodes {
+        id
+        handle
+        title
+        productType
+        variants(first: 1) {
+          nodes {
+            id
+            price
+            compareAtPrice
+            inventoryQuantity
+            inventoryManagement
+            inventoryPolicy
+            metafields(first: 10, namespace: "pricelist") {
+              nodes {
+                key
+                value
+              }
+            }
+          }
+        }
+        metafields(first: 10, namespace: "pricelist") {
+          nodes {
+            key
+            value
+          }
+        }
+      }
+    }
+  }
+`;
+
+// Update the price endpoint to handle the new query structure
+app.get('/price/:handle', async (req, res) => {
+  try {
+    const { handle } = req.params;
+    console.log('Fetching price for handle:', handle);
+
+    const response = await client.request(PRICE_QUERY, {
+      variables: {
+        handle: `handle:${handle}`
+      }
+    });
+
+    console.log('GraphQL Response:', JSON.stringify(response, null, 2));
+
+    if (!response.data?.products?.nodes?.[0]) {
+      return res.status(404).json({ 
+        error: 'Product not found',
+        handle: handle
+      });
+    }
+
+    const product = response.data.products.nodes[0];
+    const variant = product.variants.nodes[0];
+
+    const variantMetafields = variant.metafields.nodes.reduce((acc, meta) => {
+      acc[meta.key] = meta.value;
+      return acc;
+    }, {});
+    const productMetafields = product.metafields.nodes.reduce((acc, meta) => {
+      acc[meta.key] = meta.value;
+      return acc;
+    }, {});
+
+    // Process pricing information
+    const priceInfo = {
+      currentPrice: variant.price,
+      compareAtPrice: variant.compareAtPrice,
+      onSale: variant.compareAtPrice > variant.price,
+      inventory: {
+        quantity: variant.inventoryQuantity,
+        management: variant.inventoryManagement,
+        policy: variant.inventoryPolicy
+      },
+      uom: (variantMetafields.uom || '').toUpperCase(),
+      sellUnit: (variantMetafields.sell_unit || '').toUpperCase(),
+      status: (productMetafields.status || '').toUpperCase(),
+      productType: (product.productType || '').toUpperCase()
+    };
+
+    // Calculate conversion values
+    priceInfo.conversion = calculateConversion(priceInfo.uom, priceInfo.sellUnit, variantMetafields);
+    
+    // Calculate price per square foot
+    if (product.productType.toUpperCase() !== 'TRIM') {
+      priceInfo.pricePerSqFt = calculatePricePerSqFt(priceInfo, variantMetafields);
+    }
+
+    // Determine stock status
+    priceInfo.stock = determineStockStatus(priceInfo);
+
+    // Additional logic from Liquid template
+    const stockNotice = determineStockNotice(priceInfo);
+    const unitDisplay = determineUnitDisplay(priceInfo.sellUnit);
+
+    res.json({
+      ...priceInfo,
+      stockNotice,
+      unitDisplay
+    });
+  } catch (error) {
+    console.error('Error fetching price:', error);
+    res.status(500).json({
+      error: 'Failed to fetch price information',
+      details: error.message
+    });
+  }
+});
+
+function calculateConversion(uom, sellUnit, metafields) {
+  if (!uom || !sellUnit) return 1;
+
+  switch(uom) {
+    case 'SF':
+      switch(sellUnit) {
+        case 'SF': return 1;
+        case 'EA':
+        case 'SHT': return Number(metafields.sf_ea);
+        case 'BX':
+        case 'SET': return Number(metafields.sf_box);
+        case 'PLT': return Number(metafields.sf_plt);
+        default: return 1;
+      }
+    // Add other conversion cases as needed
+    default:
+      return 1;
+  }
+}
+
+function calculatePricePerSqFt(priceInfo, metafields) {
+  const { uom, sellUnit, currentPrice, compareAtPrice } = priceInfo;
+  let totalSf = 1;
+
+  if (uom === 'SF') {
+    switch(sellUnit) {
+      case 'SF':
+        totalSf = 1;
+        break;
+      case 'EA':
+      case 'SHT':
+        totalSf = Number(metafields.sf_ea);
+        break;
+      case 'BX':
+      case 'SET':
+        totalSf = Number(metafields.sf_box);
+        break;
+      case 'PLT':
+        totalSf = Number(metafields.sf_box) * Number(metafields.bx_plt);
+        break;
+    }
+  }
+
+  return {
+    current: totalSf ? (currentPrice / totalSf) : currentPrice,
+    compare: compareAtPrice ? (compareAtPrice / totalSf) : null
+  };
+}
+
+function determineStockStatus(priceInfo) {
+  const { status, inventory } = priceInfo;
+  const result = {
+    notice: '',
+    subtext: '',
+    color: '',
+    hasBoldText: false
+  };
+
+  if (status === 'ACTIVE') {
+    if (inventory.management === 'shopify' && inventory.policy === 'continue') {
+      if (inventory.quantity === 0) {
+        result.notice = 'Temporarily';
+        result.subtext = 'Oversold';
+        result.color = '#FD8B07';
+        result.hasBoldText = true;
+      }
+    }
+  }
+
+  return result;
+}
+
+function determineStockNotice(priceInfo) {
+  const { status, inventory } = priceInfo;
+  let notice = '';
+  let subtext = '';
+  let color = '';
+  let hasBoldText = false;
+
+  if (status === 'ACTIVE') {
+    if (inventory.management === 'shopify' && inventory.policy === 'continue') {
+      if (inventory.quantity === 0) {
+        notice = 'Temporarily';
+        subtext = 'Oversold';
+        color = '#FD8B07';
+        hasBoldText = true;
+      } else if (inventory.quantity > 0) {
+        notice = 'Low Stock';
+        subtext = `Only ${inventory.quantity} left!`;
+        color = '#FD8B07';
+      }
+    }
+  } else if (status === 'DISCONTINUED') {
+    if (inventory.management === 'shopify' && inventory.policy === 'deny') {
+      if (inventory.quantity === 0) {
+        notice = 'Discontinued';
+        subtext = 'Out of Stock';
+        color = '#DC3545';
+      } else if (inventory.quantity > 0) {
+        notice = 'Discontinued';
+        subtext = `Only ${inventory.quantity} left!`;
+        color = '#FD8B07';
+      }
+    }
+  } else if (status === 'CLEARANCE') {
+    if (inventory.management === 'shopify' && inventory.policy === 'deny') {
+      if (inventory.quantity > 0) {
+        subtext = `Only ${inventory.quantity} left!`;
+        color = '#FD8B07';
+      } else {
+        subtext = 'Out of Stock';
+        color = '#DC3545';
+      }
+    }
+  }
+
+  return { notice, subtext, color, hasBoldText };
+}
+
+function determineUnitDisplay(sellUnit) {
+  switch (sellUnit) {
+    case 'BX':
+      return { singular: 'box', plural: 'boxes' };
+    case 'SF':
+      return { singular: 'sq.ft', plural: 'sq.ft' };
+    case 'EA':
+      return { singular: 'piece', plural: 'pieces' };
+    case 'SHT':
+      return { singular: 'sheet', plural: 'sheets' };
+    case 'SET':
+      return { singular: 'set', plural: 'sets' };
+    case 'PLT':
+      return { singular: 'pallet', plural: 'pallets' };
+    default:
+      return { singular: '', plural: '' };
+  }
+}
+
+// Order query
+const ORDER_QUERY = `
+  query GetOrder($id: ID!) {
+    order(id: $id) {
+      id
+      name
+      email
+      phone
+      totalPriceSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      subtotalPriceSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      totalShippingPriceSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      totalTaxSet {
+        shopMoney {
+          amount
+          currencyCode
+        }
+      }
+      lineItems(first: 50) {
+        nodes {
+          title
+          quantity
+          originalUnitPriceSet {
+            shopMoney {
+              amount
+              currencyCode
+            }
+          }
+          variant {
+            id
+            sku
+            product {
+              handle
+            }
+          }
+        }
+      }
+      shippingAddress {
+        address1
+        address2
+        city
+        province
+        zip
+        country
+      }
+      fulfillments {
+        trackingCompany
+        trackingNumbers
+      }
+    }
+  }
+`;
+
+// Orders endpoint
+app.get('/orders/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Use REST API endpoint
+    const response = await fetch(`https://${SHOP_URL}/admin/api/2024-01/orders/${id}.json`, {
+      headers: {
+        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      console.error('Shopify API error:', await response.text());
+      return res.status(response.status).json({
+        error: 'Failed to fetch order',
+        orderId: id,
+        status: response.status
+      });
+    }
+
+    const data = await response.json();
+    res.json(data);
+    
+  } catch (error) {
+    console.error('Error fetching order:', error);
+    res.status(500).json({
+      error: 'Failed to fetch order information',
+      details: error.message,
+      requestedId: id
+    });
   }
 });
 
