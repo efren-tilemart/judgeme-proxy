@@ -610,6 +610,47 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
+// Instagram feed endpoint
+app.get('/instagram', async (req, res) => {
+  try {
+    const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
+    const INSTAGRAM_API_URL = 'https://graph.instagram.com/me/media';
+    
+    const response = await fetch(`${INSTAGRAM_API_URL}?fields=id,caption,media_type,media_url,permalink&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
+
+    if (!response.ok) {
+      console.error('Instagram API error:', await response.text());
+      return res.status(response.status).json({
+        error: 'Failed to fetch Instagram feed',
+        status: response.status
+      });
+    }
+
+    const data = await response.json();
+    
+    // Transform the data to include only what we need
+    const transformedPosts = data.data.map(post => ({
+      id: post.id,
+      caption: post.caption,
+      mediaType: post.media_type,
+      mediaUrl: post.media_url,
+      permalink: post.permalink
+    }));
+
+    res.json({
+      posts: transformedPosts,
+      paging: data.paging
+    });
+
+  } catch (error) {
+    console.error('Error fetching Instagram feed:', error);
+    res.status(500).json({
+      error: 'Failed to fetch Instagram feed',
+      details: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`App running on port ${PORT}`);
 });
