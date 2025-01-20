@@ -610,15 +610,32 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
+// Add to the top with other cache declarations
+let instagramCache = {
+  data: null,
+  lastFetched: null
+};
+
 // Instagram feed endpoint
 app.get('/instagram', async (req, res) => {
   try {
+    // Check if we have cached data that's still valid
+    if (instagramCache.data && instagramCache.lastFetched && 
+        (Date.now() - instagramCache.lastFetched) < CACHE_DURATION) {
+      return res.json(instagramCache.data);
+    }
+
     const INSTAGRAM_ACCESS_TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
     const INSTAGRAM_API_URL = 'https://graph.instagram.com/me/media';
     
     const response = await fetch(`${INSTAGRAM_API_URL}?fields=id,caption,media_type,media_url,permalink&access_token=${INSTAGRAM_ACCESS_TOKEN}`);
 
     if (!response.ok) {
+      // If we have cached data, return it on error
+      if (instagramCache.data) {
+        return res.json(instagramCache.data);
+      }
+      
       console.error('Instagram API error:', await response.text());
       return res.status(response.status).json({
         error: 'Failed to fetch Instagram feed',
@@ -629,20 +646,33 @@ app.get('/instagram', async (req, res) => {
     const data = await response.json();
     
     // Transform the data to include only what we need
-    const transformedPosts = data.data.map(post => ({
-      id: post.id,
-      caption: post.caption,
-      mediaType: post.media_type,
-      mediaUrl: post.media_url,
-      permalink: post.permalink
-    }));
-
-    res.json({
-      posts: transformedPosts,
+    const transformedData = {
+      posts: data.data.map(post => ({
+        id: post.id,
+        caption: post.caption,
+        mediaType: post.media_type,
+        mediaUrl: post.media_url,
+        permalink: post.permalink
+      })),
       paging: data.paging
-    });
+    };
+
+    // Update cache
+    instagramCache = {
+      data: transformedData,
+      lastFetched: Date.now()
+    };
+
+    // Cache the response for 24 hours
+    res.set('Cache-Control', 'public, max-age=86400');
+    res.json(transformedData);
 
   } catch (error) {
+    // Return cached data if available
+    if (instagramCache.data) {
+      return res.json(instagramCache.data);
+    }
+
     console.error('Error fetching Instagram feed:', error);
     res.status(500).json({
       error: 'Failed to fetch Instagram feed',
