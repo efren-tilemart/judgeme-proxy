@@ -20,6 +20,13 @@ const client = createGraphQLClient({
     'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
   },
   fetchApi: fetch,
+  onRequestError: ({ error }) => {
+    console.error('GraphQL request error:', {
+      message: error.message,
+      status: error.networkStatusCode,
+      response: error.response
+    });
+  }
 });
 
 // Allow CORS from specific origin
@@ -677,6 +684,198 @@ app.get('/instagram', async (req, res) => {
     res.status(500).json({
       error: 'Failed to fetch Instagram feed',
       details: error.message
+    });
+  }
+});
+
+// Enhanced version with better error handling and logging
+app.get('/collection/:handle', async (req, res) => {
+  try {
+    const { handle } = req.params;
+    const first = parseInt(req.query.limit) || 250;
+    const after = req.query.after || null;
+
+    console.log('Fetching collection with handle:', handle);
+    console.log('Query parameters:', { first, after });
+
+    // Modified query to include error checking
+    const PAGINATED_COLLECTION_QUERY = `
+      query GetProductsWithMetafields($collectionHandle: String!, $first: Int!, $after: String) {
+        collectionByHandle(handle: $collectionHandle) {
+          id
+          title
+          handle
+          products(first: $first, after: $after) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              title
+              handle
+              metafield(namespace: "primary", key: "application") {
+                value
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    console.log('Executing GraphQL query...');
+    const response = await client.request(PAGINATED_COLLECTION_QUERY, {
+      variables: {
+        collectionHandle: handle,
+        first: first,
+        after: after
+      }
+    });
+
+    console.log('GraphQL Response:', JSON.stringify(response, null, 2));
+
+    if (!response.data?.collectionByHandle) {
+      console.log('Collection not found in response:', response);
+      return res.status(404).json({
+        error: 'Collection not found',
+        handle: handle,
+        debug: {
+          responseData: response.data,
+          shopUrl: SHOP_URL,
+          timestamp: new Date().toISOString()
+        }
+      });
+    }
+
+    const collection = response.data.collectionByHandle;
+    const transformedData = {
+      id: collection.id,
+      title: collection.title,
+      handle: collection.handle,
+      products: collection.products.nodes.map(product => ({
+        id: product.id,
+        title: product.title,
+        handle: product.handle,
+        application: product.metafield?.value || null
+      })),
+      pageInfo: collection.products.pageInfo
+    };
+
+    res.set('Cache-Control', 'public, max-age=300');
+    console.log('Successfully transformed collection data:', transformedData);
+    res.json(transformedData);
+
+  } catch (error) {
+    console.error('Detailed error fetching collection products:', {
+      error: error.message,
+      stack: error.stack,
+      handle: req.params.handle,
+      response: error.response?.data,
+      extensions: error.extensions
+    });
+
+    res.status(500).json({
+      error: 'Failed to fetch collection products',
+      details: error.message || 'Unknown error',
+      handle: req.params.handle,
+      debug: {
+        errorType: error.constructor.name,
+        timestamp: new Date().toISOString(),
+        shopUrl: SHOP_URL
+      }
+    });
+  }
+});
+
+// Modify the collections endpoint with a simpler query and better error handling
+app.get('/collections', async (req, res) => {
+  try {
+    // Updated query with better error handling
+    const COLLECTIONS_QUERY = `
+      query GetCollections {
+        collections(first: 50) {
+          edges {
+            node {
+              id
+              handle
+              title
+              productsCount
+              updatedAt
+            }
+          }
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+        }
+        shop {
+          name
+          id
+        }
+      }
+    `;
+
+    console.log('Attempting to fetch collections...');
+    console.log('Shop URL:', SHOP_URL);
+    console.log('Access Token length:', SHOPIFY_ACCESS_TOKEN?.length);
+    console.log('GraphQL Endpoint:', `https://${SHOP_URL}/admin/api/2024-01/graphql.json`);
+
+    const response = await client.request(COLLECTIONS_QUERY);
+    
+    console.log('Raw GraphQL Response:', JSON.stringify(response, null, 2));
+
+    if (!response.data?.collections?.edges) {
+      return res.status(404).json({
+        error: 'No collections found',
+        debug: {
+          responseData: response.data,
+          shopUrl: SHOP_URL,
+          timestamp: new Date().toISOString(),
+          hasToken: !!SHOPIFY_ACCESS_TOKEN,
+          shopInfo: response.data?.shop
+        }
+      });
+    }
+
+    const collections = response.data.collections.edges.map(edge => ({
+      id: edge.node.id,
+      handle: edge.node.handle,
+      title: edge.node.title,
+      productsCount: edge.node.productsCount,
+      updatedAt: edge.node.updatedAt
+    }));
+
+    res.json({
+      collections,
+      count: collections.length,
+      shop: response.data.shop,
+      timestamp: new Date().toISOString(),
+      debug: {
+        shopUrl: SHOP_URL,
+        apiVersion: '2024-01'
+      }
+    });
+
+  } catch (error) {
+    console.error('Detailed collections error:', {
+      message: error.message,
+      response: error.response?.errors,
+      extensions: error.extensions,
+      networkStatus: error.networkStatusCode
+    });
+
+    res.status(error.networkStatusCode || 500).json({
+      error: 'Failed to fetch collections',
+      details: error.message,
+      debug: {
+        errorType: error.constructor.name,
+        shopUrl: SHOP_URL,
+        timestamp: new Date().toISOString(),
+        hasToken: !!SHOPIFY_ACCESS_TOKEN,
+        tokenLength: SHOPIFY_ACCESS_TOKEN?.length,
+        graphQLErrors: error.response?.errors || [],
+        networkStatusCode: error.networkStatusCode
+      }
     });
   }
 });
