@@ -141,7 +141,7 @@ let reviewsCache = {
 const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
 
 const axiosInstance = axios.create({
-  timeout: 5000, // 5 second timeout
+  timeout: 15000, // 15 second timeout
   headers: {
     'Accept-Encoding': 'gzip,deflate',
     'Connection': 'keep-alive',
@@ -298,7 +298,7 @@ app.get('/fetch', async (req, res) => {
     if (reviewsCache.data) {
       return res.json(reviewsCache.data);
     }
-    res.status(500).json({ error: 'Failed to fetch reviews' });
+    res.status(500).json({ error: 'Failed to fetch reviews', details: error.message || 'Unknown error' });
   }
 });
 
