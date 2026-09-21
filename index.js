@@ -51,6 +51,40 @@ function getInstagramStore(storeKey) {
   return { storeKey: normalizedStoreKey, accessToken };
 }
 
+const INSTAGRAM_TOKEN_REFRESH_URL = 'https://graph.instagram.com/refresh_access_token';
+const TOKEN_REFRESH_BUFFER_MS = 5 * 24 * 60 * 60 * 1000; // refresh 5 days before expiry
+const instagramTokenCache = new Map();
+
+async function getFreshInstagramToken(store) {
+  const cached = instagramTokenCache.get(store.storeKey);
+
+  if (cached && (cached.expiresAt - Date.now()) > TOKEN_REFRESH_BUFFER_MS) {
+    return cached.accessToken;
+  }
+
+  const currentToken = cached ? cached.accessToken : store.accessToken;
+
+  try {
+    const response = await fetch(`${INSTAGRAM_TOKEN_REFRESH_URL}?grant_type=ig_refresh_token&access_token=${currentToken}`);
+
+    if (!response.ok) {
+      console.warn(`Instagram token refresh failed for store ${store.storeKey}:`, await response.text());
+      return currentToken;
+    }
+
+    const { access_token, expires_in } = await response.json();
+    instagramTokenCache.set(store.storeKey, {
+      accessToken: access_token,
+      expiresAt: Date.now() + expires_in * 1000
+    });
+
+    return access_token;
+  } catch (error) {
+    console.warn(`Instagram token refresh error for store ${store.storeKey}:`, error.message);
+    return currentToken;
+  }
+}
+
 // Initialize Shopify GraphQL client
 const client = createGraphQLClient({
   url: `https://${SHOP_URL}/admin/api/2024-01/graphql.json`,
@@ -680,8 +714,9 @@ async function handleInstagramRequest(req, res, storeKey = 'tilemart') {
     }
 
     const INSTAGRAM_API_URL = 'https://graph.instagram.com/me/media';
-    
-    const response = await fetch(`${INSTAGRAM_API_URL}?fields=id,caption,media_type,media_url,permalink&access_token=${store.accessToken}`);
+    const accessToken = await getFreshInstagramToken(store);
+
+    const response = await fetch(`${INSTAGRAM_API_URL}?fields=id,caption,media_type,media_url,permalink&access_token=${accessToken}`);
 
     if (!response.ok) {
       if (cachedFeed.data) {
