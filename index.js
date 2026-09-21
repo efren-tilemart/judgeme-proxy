@@ -12,78 +12,7 @@ const JUDGE_ME_API_TOKEN = process.env.JUDGE_ME_API_TOKEN;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const SHOP_URL = 'mytilemart.myshopify.com';
 
-const INSTAGRAM_STORES = {
-  tilemart: process.env.TILEMART_INSTAGRAM_ACCESS_TOKEN || process.env.INSTAGRAM_ACCESS_TOKEN,
-  elittile: process.env.ELITTILE_INSTAGRAM_ACCESS_TOKEN
-};
-
-function normalizeInstagramStore(rawStore) {
-  return String(rawStore)
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '');
-}
-
-function getInstagramStore(storeKey) {
-  const normalizedStoreKey = normalizeInstagramStore(storeKey);
-  const accessToken = INSTAGRAM_STORES[normalizedStoreKey];
-
-  if (!Object.prototype.hasOwnProperty.call(INSTAGRAM_STORES, normalizedStoreKey)) {
-    const error = new Error(`Unknown Instagram store: ${normalizedStoreKey}`);
-    error.statusCode = 400;
-    error.details = {
-      requestedStore: normalizedStoreKey,
-      availableStores: Object.keys(INSTAGRAM_STORES)
-    };
-    throw error;
-  }
-
-  if (!accessToken) {
-    const error = new Error(`Instagram credentials are not configured for store: ${normalizedStoreKey}`);
-    error.statusCode = 500;
-    error.details = {
-      requestedStore: normalizedStoreKey,
-      missingEnv: `${normalizedStoreKey.toUpperCase()}_INSTAGRAM_ACCESS_TOKEN`
-    };
-    throw error;
-  }
-
-  return { storeKey: normalizedStoreKey, accessToken };
-}
-
-const INSTAGRAM_TOKEN_REFRESH_URL = 'https://graph.instagram.com/refresh_access_token';
-const TOKEN_REFRESH_BUFFER_MS = 5 * 24 * 60 * 60 * 1000; // refresh 5 days before expiry
-const instagramTokenCache = new Map();
-
-async function getFreshInstagramToken(store) {
-  const cached = instagramTokenCache.get(store.storeKey);
-
-  if (cached && (cached.expiresAt - Date.now()) > TOKEN_REFRESH_BUFFER_MS) {
-    return cached.accessToken;
-  }
-
-  const currentToken = cached ? cached.accessToken : store.accessToken;
-
-  try {
-    const response = await fetch(`${INSTAGRAM_TOKEN_REFRESH_URL}?grant_type=ig_refresh_token&access_token=${currentToken}`);
-
-    if (!response.ok) {
-      console.warn(`Instagram token refresh failed for store ${store.storeKey}:`, await response.text());
-      return currentToken;
-    }
-
-    const { access_token, expires_in } = await response.json();
-    instagramTokenCache.set(store.storeKey, {
-      accessToken: access_token,
-      expiresAt: Date.now() + expires_in * 1000
-    });
-
-    return access_token;
-  } catch (error) {
-    console.warn(`Instagram token refresh error for store ${store.storeKey}:`, error.message);
-    return currentToken;
-  }
-}
+const INSTAGRAM_FEED_WORKER_URL = process.env.INSTAGRAM_FEED_WORKER_URL || 'https://instagram-feed-worker.tilemart.workers.dev';
 
 // Initialize Shopify GraphQL client
 const client = createGraphQLClient({
@@ -690,84 +619,24 @@ app.get('/orders/:id', async (req, res) => {
   }
 });
 
-const instagramCache = new Map();
-
-function getCachedValue(cache, storeKey) {
-  return cache.get(storeKey) || { data: null, lastFetched: null };
-}
-
-function setCachedValue(cache, storeKey, data) {
-  cache.set(storeKey, {
-    data,
-    lastFetched: Date.now()
-  });
-}
-
 async function handleInstagramRequest(req, res, storeKey = 'tilemart') {
+  const path = storeKey === 'elittile' ? '/instagram/elittile' : '/instagram';
+
   try {
-    const store = getInstagramStore(storeKey);
-    const cachedFeed = getCachedValue(instagramCache, store.storeKey);
-
-    if (cachedFeed.data && cachedFeed.lastFetched &&
-        (Date.now() - cachedFeed.lastFetched) < CACHE_DURATION) {
-      return res.json(cachedFeed.data);
-    }
-
-    const INSTAGRAM_API_URL = 'https://graph.instagram.com/me/media';
-    const accessToken = await getFreshInstagramToken(store);
-
-    const response = await fetch(`${INSTAGRAM_API_URL}?fields=id,caption,media_type,media_url,permalink&access_token=${accessToken}`);
-
-    if (!response.ok) {
-      if (cachedFeed.data) {
-        return res.json(cachedFeed.data);
-      }
-      
-      console.error('Instagram API error:', await response.text());
-      return res.status(response.status).json({
-        error: 'Failed to fetch Instagram feed',
-        status: response.status,
-        store: store.storeKey
-      });
-    }
-
+    const response = await fetch(`${INSTAGRAM_FEED_WORKER_URL}${path}`);
     const data = await response.json();
-    
-    // Transform the data to include only what we need
-    const transformedData = {
-      posts: data.data.map(post => ({
-        id: post.id,
-        caption: post.caption,
-        mediaType: post.media_type,
-        mediaUrl: post.media_url,
-        permalink: post.permalink
-      })),
-      paging: data.paging
-    };
-
-    setCachedValue(instagramCache, store.storeKey, transformedData);
-
-    // Cache the response for 24 hours
-    res.set('Cache-Control', 'public, max-age=86400');
-    res.json(transformedData);
-
+    res.status(response.status).json(data);
   } catch (error) {
-    const normalizedStoreKey = normalizeInstagramStore(storeKey);
-    const cachedFeed = getCachedValue(instagramCache, normalizedStoreKey);
-
-    if (cachedFeed.data) {
-      return res.json(cachedFeed.data);
-    }
-
-    console.error('Error fetching Instagram feed:', error);
-    return res.status(error.statusCode || 500).json({
-      error: error.message || 'Failed to fetch Instagram feed',
-      ...(error.details ? { details: error.details } : {})
+    console.error('Error fetching Instagram feed from worker:', error);
+    res.status(502).json({
+      error: 'Failed to fetch Instagram feed',
+      store: storeKey
     });
   }
 }
 
-// Instagram feed endpoints
+// Instagram feed endpoints — proxied to the instagram-feed-worker Cloudflare Worker,
+// which owns token refresh/caching (see C:\Users\efren\instagram-feed-worker)
 app.get('/instagram', (req, res) => handleInstagramRequest(req, res, 'tilemart'));
 app.get('/instagram/elittile', (req, res) => handleInstagramRequest(req, res, 'elittile'));
 
