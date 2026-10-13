@@ -526,6 +526,9 @@ const ORDER_QUERY = `
       name
       email
       phone
+      createdAt
+      displayFinancialStatus
+      displayFulfillmentStatus
       totalPriceSet {
         shopMoney {
           amount
@@ -578,8 +581,10 @@ const ORDER_QUERY = `
         country
       }
       fulfillments {
-        trackingCompany
-        trackingNumbers
+        trackingInfo {
+          company
+          number
+        }
       }
     }
   }
@@ -587,29 +592,57 @@ const ORDER_QUERY = `
 
 // Orders endpoint
 app.get('/orders/:id', async (req, res) => {
+  const { id } = req.params;
   try {
-    const { id } = req.params;
-    
-    // Use REST API endpoint
-    const response = await fetch(`https://${SHOP_URL}/admin/api/2024-01/orders/${id}.json`, {
-      headers: {
-        'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-        'Content-Type': 'application/json'
-      }
+    const response = await client.request(ORDER_QUERY, {
+      variables: { id: `gid://shopify/Order/${id}` }
     });
 
-    if (!response.ok) {
-      console.error('Shopify API error:', await response.text());
-      return res.status(response.status).json({
+    if (response.errors) {
+      console.error('Shopify GraphQL error:', JSON.stringify(response.errors));
+      const isAccessDenied = response.errors.graphQLErrors?.some(e => e.extensions?.code === 'ACCESS_DENIED');
+      return res.status(isAccessDenied ? 403 : 502).json({
         error: 'Failed to fetch order',
         orderId: id,
-        status: response.status
+        details: response.errors.message
       });
     }
 
-    const data = await response.json();
-    res.json(data);
-    
+    if (!response.data?.order) {
+      return res.status(404).json({
+        error: 'Order not found',
+        orderId: id
+      });
+    }
+
+    const order = response.data.order;
+
+    res.json({
+      order: {
+        id,
+        name: order.name,
+        email: order.email,
+        phone: order.phone,
+        created_at: order.createdAt,
+        financial_status: order.displayFinancialStatus?.toLowerCase(),
+        fulfillment_status: order.displayFulfillmentStatus?.toLowerCase(),
+        currency: order.totalPriceSet.shopMoney.currencyCode,
+        total_price: order.totalPriceSet.shopMoney.amount,
+        subtotal_price: order.subtotalPriceSet.shopMoney.amount,
+        total_shipping_price: order.totalShippingPriceSet.shopMoney.amount,
+        total_tax: order.totalTaxSet.shopMoney.amount,
+        line_items: order.lineItems.nodes.map(item => ({
+          title: item.title,
+          quantity: item.quantity,
+          sku: item.variant?.sku,
+          product_handle: item.variant?.product?.handle,
+          price: item.originalUnitPriceSet.shopMoney.amount
+        })),
+        shipping_address: order.shippingAddress,
+        fulfillments: order.fulfillments
+      }
+    });
+
   } catch (error) {
     console.error('Error fetching order:', error);
     res.status(500).json({
