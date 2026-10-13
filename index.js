@@ -254,8 +254,9 @@ app.get('/fetch', async (req, res) => {
       lastFetched: Date.now()
     };
 
-    // Cache the response for 24 hours
-    res.set('Cache-Control', 'public, max-age=86400');
+    // Cache at Vercel's edge for 24h and serve stale while revalidating, so
+    // visitors never wait on the slow full Judge.me pagination
+    res.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
     res.json(sanitizedReviews);
   } catch (error) {
     if (reviewsCache.data) {

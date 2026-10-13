@@ -4,6 +4,9 @@
   "description": "Proxy server for Judge.me reviews API",
   "main": "index.js",
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js"
